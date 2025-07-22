@@ -3,10 +3,6 @@ const AGGRESSIVE_RANDOM_VIBRATION_INTENSITY = MODERATE_RANDOM_VIBRATION_INTENSIT
 const MIN_NODE_THRESHOLD = 1e-2;
 const GRADIENT_RENEWAL_PERIOD_IN_MS = 2200;
 
-const L1 = 0.04;
-const L2 = 0.02;
-const L3 = 0.018;
-
 class ChladniParams {
     constructor (m, n, l) {
         this.m = m;
@@ -15,18 +11,6 @@ class ChladniParams {
     }
 }
 
-const CHLADNI_PARAMS = [
-    new ChladniParams(1, 2, L1),
-    new ChladniParams(1, 3, L3),
-    new ChladniParams(1, 4, L2),
-    new ChladniParams(1, 5, L2),
-    new ChladniParams(2, 3, L2),
-    new ChladniParams(2, 5, L2),
-    new ChladniParams(3, 4, L2),
-    new ChladniParams(3, 5, L2),
-    new ChladniParams(3, 7, L2),
-];
-
 class GradientWorker {
 
     constructor () {
@@ -34,25 +18,25 @@ class GradientWorker {
         this.gradients = null;
         this.width = null;
         this.height = null;
-        this.gradientParametersIndex = 0;
         this.bakingTimer = null;
         this.isResonantRound = true;
 
-        // Track frequency param, default to L1
-        this.currentFrequency = L1;
+        // Default to first params until changed from main thread
+        this.currentParams = new ChladniParams(1, 2, 0.04);
 
         self.addEventListener("message", this.receiveUpdateFromMainThread.bind(this));
     }
 
     receiveUpdateFromMainThread(message) {
-        // Update width and height if provided
-        if (message.data.width !== undefined) this.width = message.data.width;
-        if (message.data.height !== undefined) this.height = message.data.height;
+        this.width = message.data.width;
+        this.height = message.data.height;
 
-        // Update frequency if provided
-        if (message.data.frequency !== undefined) {
-            this.currentFrequency = message.data.frequency;
-            console.info(`Frequency updated to ${this.currentFrequency}`);
+        if (message.data.chladniParams) {
+            this.currentParams = new ChladniParams(
+                message.data.chladniParams.m,
+                message.data.chladniParams.n,
+                message.data.chladniParams.l
+            );
         }
 
         if (this.bakingTimer) {
@@ -64,14 +48,11 @@ class GradientWorker {
         this.bakingTimer = setInterval(this.bakeNextGradients.bind(this), GRADIENT_RENEWAL_PERIOD_IN_MS);
     }
 
-    /**
-     * @param {ChladniParams} chladniParams
-     */
     computeVibrationValues(chladniParams) {
         const M = chladniParams.m;
         const N = chladniParams.n;
         const L = chladniParams.l;
-        const R = 0;  // Math.random() * TAU;  // turn this on to introduce some asymmetry
+        const R = 0;
         const TX = Math.random() * this.height;
         const TY = Math.random() * this.height;
 
@@ -80,6 +61,7 @@ class GradientWorker {
             for (let x = 0; x < this.width; x++) {
                 const scaledX = x * L + TX;
                 const scaledY = y * L + TY;
+
                 const MX = M * scaledX + R;
                 const NX = N * scaledX + R;
                 const MY = M * scaledY + R;
@@ -99,6 +81,7 @@ class GradientWorker {
 
     computeGradients() {
         this.gradients = new Float32Array(this.width * this.height * 2);
+
         for (let y = 1; y < this.height - 1; y++) {
             for (let x = 1; x < this.width - 1; x++) {
                 const myIndex = y * this.width + x;
@@ -117,7 +100,9 @@ class GradientWorker {
                 let minVibrationSoFar = Number.POSITIVE_INFINITY;
                 for (let ny = -1; ny <= 1; ny++) {
                     for (let nx = -1; nx <= 1; nx++) {
-                        if (nx === 0 && ny === 0) continue;
+                        if (nx === 0 && ny === 0) {
+                            continue;
+                        }
 
                         const ni = (y + ny) * this.width + (x + nx);
                         const nv = this.vibrationValues[ni];
@@ -132,9 +117,8 @@ class GradientWorker {
                     }
                 }
 
-                const chosenGradient = candidateGradients.length === 1
-                    ? candidateGradients[0]
-                    : candidateGradients[Math.floor(Math.random() * candidateGradients.length)];
+                const chosenGradient = candidateGradients.length === 1 ? candidateGradients[0] :
+                    candidateGradients[Math.floor(Math.random() * candidateGradients.length)];
 
                 this.gradients[gradientIndex] = chosenGradient[0];
                 this.gradients[gradientIndex + 1] = chosenGradient[1];
@@ -159,14 +143,7 @@ class GradientWorker {
     bakeNextGradients() {
         if (this.isResonantRound) {
             console.info("Baking gradients...");
-
-            // Use current frequency in the current ChladniParams before baking
-            const chladniParams = CHLADNI_PARAMS[this.gradientParametersIndex];
-            chladniParams.l = this.currentFrequency;
-
-            this.recalculateGradients(chladniParams);
-
-            this.gradientParametersIndex = (this.gradientParametersIndex + 1) % CHLADNI_PARAMS.length;
+            this.recalculateGradients(this.currentParams);
 
             self.postMessage({
                 vibrationIntensity: MODERATE_RANDOM_VIBRATION_INTENSITY,
