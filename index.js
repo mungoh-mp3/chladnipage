@@ -1,4 +1,3 @@
-
 import * as Utils from "./utils.js";
 import {Debouncer} from "./utils.js";
 
@@ -7,7 +6,6 @@ const DEFAULT_RANDOM_VIBRATION_INTENSITY = 2;
 const MAX_GRADIENT_INTENSITY = .4;
 const DEBUG_VIBRATION_LEVELS = false;
 const CANVAS_SCALE = 1.5;
-
 
 class ChladniApp {
 
@@ -35,6 +33,8 @@ class ChladniApp {
 
         this.width = window.innerWidth / CANVAS_SCALE;
         this.height = window.innerHeight / CANVAS_SCALE;
+
+        this.currentFrequency = 0.04;  // default frequency param L1 from your worker
 
         const debounceTimer = new Debouncer();
 
@@ -68,6 +68,9 @@ class ChladniApp {
         setInterval(this.checkForFallenParticles.bind(this), 10000);
 
         window.addEventListener("keypress", this.keypress.bind(this));
+
+        // --- FREQUENCY SLIDER UI ---
+        this.createFrequencySlider();
     }
 
     initStatus() {
@@ -93,11 +96,11 @@ class ChladniApp {
         this.worker.postMessage({
             width: this.width,
             height: this.height,
+            frequency: this.currentFrequency  // send current frequency on resize too
         });
 
         this.imageData = this.context.getImageData(0, 0, this.width, this.height);
         this.buffer = new Uint32Array(this.imageData.data.buffer);
-        // recalculateGradients();
         console.info(`New buffer created (${this.width}x${this.height})`);
 
         for (let i = 0; i < this.particles.length; i += 2) {
@@ -117,7 +120,6 @@ class ChladniApp {
         }
     }
 
-    // replace sand that fell from the plate
     checkForFallenParticles() {
         const SLACK = 100;  // allow particles to really leave the screen before replacing them
 
@@ -135,7 +137,6 @@ class ChladniApp {
     }
 
     obtainGradientAt(x, y) {
-        // used to lerp nearest gradient grid corners here, but it's too expensive and doesn't make any visual difference
         x = Math.round(x);
         y = Math.round(y);
         const index = (y * this.width + x) * 2;
@@ -153,7 +154,7 @@ class ChladniApp {
         }
 
         if (this.debugVibration && this.vibrationValues) {
-            const MAX_LUMINOSITY = 64;  // up to 256
+            const MAX_LUMINOSITY = 64;
             for (let i = 0; i < this.vibrationValues.length; i++) {
                 const intensity = this.vibrationValues[i] * MAX_LUMINOSITY;
                 this.buffer[i] = Utils.rgbToVal(intensity, intensity, intensity);
@@ -170,13 +171,10 @@ class ChladniApp {
 
             if (this.gradients) {
                 const [gradX, gradY] = this.obtainGradientAt(x, y);
-
-                // descend gradient
                 x += MAX_GRADIENT_INTENSITY * gradX;
                 y += MAX_GRADIENT_INTENSITY * gradY;
             }
 
-            // random vibration
             x += Math.random() * this.vibrationIntensity - this.halfVibrationIntensity;
             y += Math.random() * this.vibrationIntensity - this.halfVibrationIntensity;
 
@@ -190,6 +188,54 @@ class ChladniApp {
 
         this.fpsCount++;
         requestAnimationFrame(this.updateFn);
+    }
+
+    createFrequencySlider() {
+        const sliderContainer = document.createElement('div');
+        Object.assign(sliderContainer.style, {
+            position: 'fixed',
+            bottom: '20px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            color: 'white',
+            fontFamily: 'monospace',
+            fontSize: '16px',
+            zIndex: 1000,
+            backgroundColor: 'rgba(0,0,0,0.4)',
+            padding: '8px 12px',
+            borderRadius: '6px',
+            userSelect: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+        });
+
+        const freqLabel = document.createElement('span');
+        freqLabel.textContent = `Frequency: ${this.currentFrequency.toFixed(4)}`;
+
+        const freqSlider = document.createElement('input');
+        freqSlider.type = 'range';
+        freqSlider.min = 0.005;
+        freqSlider.max = 0.05;
+        freqSlider.step = 0.0005;
+        freqSlider.value = this.currentFrequency;
+        freqSlider.style.cursor = 'pointer';
+
+        freqSlider.addEventListener('input', () => {
+            this.currentFrequency = parseFloat(freqSlider.value);
+            freqLabel.textContent = `Frequency: ${this.currentFrequency.toFixed(4)}`;
+
+            // Send new frequency to worker with current dimensions
+            this.worker.postMessage({
+                width: this.width,
+                height: this.height,
+                frequency: this.currentFrequency
+            });
+        });
+
+        sliderContainer.appendChild(freqLabel);
+        sliderContainer.appendChild(freqSlider);
+        document.body.appendChild(sliderContainer);
     }
 }
 
