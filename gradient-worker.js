@@ -1,4 +1,3 @@
-
 const MODERATE_RANDOM_VIBRATION_INTENSITY = 3;
 const AGGRESSIVE_RANDOM_VIBRATION_INTENSITY = MODERATE_RANDOM_VIBRATION_INTENSITY * 1.5;
 const MIN_NODE_THRESHOLD = 1e-2;
@@ -39,13 +38,22 @@ class GradientWorker {
         this.bakingTimer = null;
         this.isResonantRound = true;
 
+        // Track frequency param, default to L1
+        this.currentFrequency = L1;
+
         self.addEventListener("message", this.receiveUpdateFromMainThread.bind(this));
     }
 
     receiveUpdateFromMainThread(message) {
-        this.width = message.data.width;
-        this.height = message.data.height;
-        console.info(`Message from main thread: width=${this.width}, height=${this.height}`);
+        // Update width and height if provided
+        if (message.data.width !== undefined) this.width = message.data.width;
+        if (message.data.height !== undefined) this.height = message.data.height;
+
+        // Update frequency if provided
+        if (message.data.frequency !== undefined) {
+            this.currentFrequency = message.data.frequency;
+            console.info(`Frequency updated to ${this.currentFrequency}`);
+        }
 
         if (this.bakingTimer) {
             clearInterval(this.bakingTimer);
@@ -64,7 +72,6 @@ class GradientWorker {
         const N = chladniParams.n;
         const L = chladniParams.l;
         const R = 0;  // Math.random() * TAU;  // turn this on to introduce some asymmetry
-        // translate randomly to help spread particles
         const TX = Math.random() * this.height;
         const TY = Math.random() * this.height;
 
@@ -73,19 +80,15 @@ class GradientWorker {
             for (let x = 0; x < this.width; x++) {
                 const scaledX = x * L + TX;
                 const scaledY = y * L + TY;
-                // ToDo when scaledX|scaledY > TAU, the pattern repeats - compute it once and just copy it for the rest
                 const MX = M * scaledX + R;
                 const NX = N * scaledX + R;
                 const MY = M * scaledY + R;
                 const NY = N * scaledY + R;
 
-                // Chladni equation
                 let value = Math.cos(NX) * Math.cos(MY) - Math.cos(MX) * Math.cos(NY);
 
-                // normalize from [-2..2] to [-1..1]
                 value /= 2;
 
-                // flip troughs to become crests (values map from [-1..1] to [0..1])
                 value *= Math.sign(value);
 
                 const index = y * this.width + x;
@@ -95,8 +98,7 @@ class GradientWorker {
     }
 
     computeGradients() {
-        this.gradients = new Float32Array(this.width * this.height * 2);  // times 2 to store x,y values for each point
-        // skip borders - just let their gradients be zero and avoid boundary checks below
+        this.gradients = new Float32Array(this.width * this.height * 2);
         for (let y = 1; y < this.height - 1; y++) {
             for (let x = 1; x < this.width - 1; x++) {
                 const myIndex = y * this.width + x;
@@ -104,7 +106,6 @@ class GradientWorker {
                 const myVibration = this.vibrationValues[myIndex];
 
                 if (myVibration < MIN_NODE_THRESHOLD) {
-                    // consider this a nodal position - just set gradient to zero
                     this.gradients[gradientIndex] = 0;
                     this.gradients[gradientIndex + 1] = 0;
                     continue;
@@ -116,17 +117,12 @@ class GradientWorker {
                 let minVibrationSoFar = Number.POSITIVE_INFINITY;
                 for (let ny = -1; ny <= 1; ny++) {
                     for (let nx = -1; nx <= 1; nx++) {
-                        if (nx === 0 && ny === 0) {
-                            continue;  // ourselves!
-                        }
+                        if (nx === 0 && ny === 0) continue;
 
                         const ni = (y + ny) * this.width + (x + nx);
                         const nv = this.vibrationValues[ni];
 
-                        // if neighbor has *same* vibration as minimum so far, consider it as well to avoid biasing
                         if (nv <= minVibrationSoFar) {
-                            // intentionally not normalizing by length here (very expensive *and* useless)
-
                             if (nv < minVibrationSoFar) {
                                 minVibrationSoFar = nv;
                                 candidateGradients = [];
@@ -136,8 +132,9 @@ class GradientWorker {
                     }
                 }
 
-                const chosenGradient = candidateGradients.length === 1 ? candidateGradients[0] :
-                    candidateGradients[Math.floor(Math.random() * candidateGradients.length)];  // to avoid biasing
+                const chosenGradient = candidateGradients.length === 1
+                    ? candidateGradients[0]
+                    : candidateGradients[Math.floor(Math.random() * candidateGradients.length)];
 
                 this.gradients[gradientIndex] = chosenGradient[0];
                 this.gradients[gradientIndex + 1] = chosenGradient[1];
@@ -146,31 +143,27 @@ class GradientWorker {
     }
 
     recalculateGradients(chladniParams) {
-
         let start = performance.now();
         this.computeVibrationValues(chladniParams);
         let elapsedVibration = performance.now() - start;
 
-        // Now that the vibration magnitude of each point in the plate was calculated, we can calculate gradients.
-        // Particles are looking for nodal points (where vibration magnitude is zero), so gradients must point towards
-        // the neighbor with lowest vibration.
         let elapsedGradients = performance.now();
         this.computeGradients();
         let end = performance.now();
         elapsedGradients = end - elapsedGradients;
         const elapsedTotal = end - start;
 
-        console.info(`Baking took ${elapsedTotal.toFixed(0)}ms ` +
-            `(${elapsedVibration.toFixed(0)}ms vibration + ${elapsedGradients.toFixed(0)}ms gradients)`);
+        console.info(`Baking took ${elapsedTotal.toFixed(0)}ms (${elapsedVibration.toFixed(0)}ms vibration + ${elapsedGradients.toFixed(0)}ms gradients)`);
     }
 
     bakeNextGradients() {
         if (this.isResonantRound) {
-
             console.info("Baking gradients...");
-            const chladniParams = CHLADNI_PARAMS[this.gradientParametersIndex];
 
-            // could cache results (at the expense of huge memory consumption and being unable to do zero-copy transfer)
+            // Use current frequency in the current ChladniParams before baking
+            const chladniParams = CHLADNI_PARAMS[this.gradientParametersIndex];
+            chladniParams.l = this.currentFrequency;
+
             this.recalculateGradients(chladniParams);
 
             this.gradientParametersIndex = (this.gradientParametersIndex + 1) % CHLADNI_PARAMS.length;
@@ -179,9 +172,8 @@ class GradientWorker {
                 vibrationIntensity: MODERATE_RANDOM_VIBRATION_INTENSITY,
                 vibrationValues: this.vibrationValues.buffer,
                 gradients: this.gradients.buffer,
-            }, [this.vibrationValues.buffer, this.gradients.buffer]);  // these will be zero-copy-transferred
+            }, [this.vibrationValues.buffer, this.gradients.buffer]);
         } else {
-
             self.postMessage({
                 vibrationIntensity: AGGRESSIVE_RANDOM_VIBRATION_INTENSITY,
                 vibrationValues: null,
