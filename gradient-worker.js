@@ -1,7 +1,5 @@
 const MODERATE_RANDOM_VIBRATION_INTENSITY = 3;
-const AGGRESSIVE_RANDOM_VIBRATION_INTENSITY = MODERATE_RANDOM_VIBRATION_INTENSITY * 1.5;
 const MIN_NODE_THRESHOLD = 1e-2;
-const GRADIENT_RENEWAL_PERIOD_IN_MS = 2200;
 
 class ChladniParams {
     constructor (m, n, l) {
@@ -16,12 +14,9 @@ class GradientWorker {
     constructor () {
         this.vibrationValues = null;
         this.gradients = null;
-        this.width = null;
-        this.height = null;
-        this.bakingTimer = null;
-        this.isResonantRound = true;
+        this.width = 0;
+        this.height = 0;
 
-        // Default to first params until changed from main thread
         this.currentParams = new ChladniParams(1, 2, 0.04);
 
         self.addEventListener("message", this.receiveUpdateFromMainThread.bind(this));
@@ -39,13 +34,13 @@ class GradientWorker {
             );
         }
 
-        if (this.bakingTimer) {
-            clearInterval(this.bakingTimer);
-        }
+        this.recalculateGradients(this.currentParams);
 
-        this.isResonantRound = true;
-        this.bakeNextGradients();
-        this.bakingTimer = setInterval(this.bakeNextGradients.bind(this), GRADIENT_RENEWAL_PERIOD_IN_MS);
+        self.postMessage({
+            vibrationIntensity: MODERATE_RANDOM_VIBRATION_INTENSITY,
+            vibrationValues: this.vibrationValues.buffer,
+            gradients: this.gradients.buffer,
+        }, [this.vibrationValues.buffer, this.gradients.buffer]);
     }
 
     computeVibrationValues(chladniParams) {
@@ -100,9 +95,7 @@ class GradientWorker {
                 let minVibrationSoFar = Number.POSITIVE_INFINITY;
                 for (let ny = -1; ny <= 1; ny++) {
                     for (let nx = -1; nx <= 1; nx++) {
-                        if (nx === 0 && ny === 0) {
-                            continue;
-                        }
+                        if (nx === 0 && ny === 0) continue;
 
                         const ni = (y + ny) * this.width + (x + nx);
                         const nv = this.vibrationValues[ni];
@@ -117,8 +110,9 @@ class GradientWorker {
                     }
                 }
 
-                const chosenGradient = candidateGradients.length === 1 ? candidateGradients[0] :
-                    candidateGradients[Math.floor(Math.random() * candidateGradients.length)];
+                const chosenGradient = candidateGradients.length === 1
+                    ? candidateGradients[0]
+                    : candidateGradients[Math.floor(Math.random() * candidateGradients.length)];
 
                 this.gradients[gradientIndex] = chosenGradient[0];
                 this.gradients[gradientIndex + 1] = chosenGradient[1];
@@ -127,38 +121,8 @@ class GradientWorker {
     }
 
     recalculateGradients(chladniParams) {
-        let start = performance.now();
         this.computeVibrationValues(chladniParams);
-        let elapsedVibration = performance.now() - start;
-
-        let elapsedGradients = performance.now();
         this.computeGradients();
-        let end = performance.now();
-        elapsedGradients = end - elapsedGradients;
-        const elapsedTotal = end - start;
-
-        console.info(`Baking took ${elapsedTotal.toFixed(0)}ms (${elapsedVibration.toFixed(0)}ms vibration + ${elapsedGradients.toFixed(0)}ms gradients)`);
-    }
-
-    bakeNextGradients() {
-        if (this.isResonantRound) {
-            console.info("Baking gradients...");
-            this.recalculateGradients(this.currentParams);
-
-            self.postMessage({
-                vibrationIntensity: MODERATE_RANDOM_VIBRATION_INTENSITY,
-                vibrationValues: this.vibrationValues.buffer,
-                gradients: this.gradients.buffer,
-            }, [this.vibrationValues.buffer, this.gradients.buffer]);
-        } else {
-            self.postMessage({
-                vibrationIntensity: AGGRESSIVE_RANDOM_VIBRATION_INTENSITY,
-                vibrationValues: null,
-                gradients: null,
-            });
-        }
-
-        this.isResonantRound = !this.isResonantRound;
     }
 }
 
