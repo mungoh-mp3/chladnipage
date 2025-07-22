@@ -3,12 +3,24 @@ import {Debouncer} from "./utils.js";
 
 const NUM_PARTICLES = 30000;
 const DEFAULT_RANDOM_VIBRATION_INTENSITY = 2;
-const MAX_GRADIENT_INTENSITY = .4;
+const MAX_GRADIENT_INTENSITY = 0.4;
 const DEBUG_VIBRATION_LEVELS = false;
 const CANVAS_SCALE = 1.5;
 
-class ChladniApp {
+// Predefined Chladni Params must match worker's CHLADNI_PARAMS order
+const CHLADNI_PARAMS = [
+    {m: 1, n: 2, l: 0.04},
+    {m: 1, n: 3, l: 0.018},
+    {m: 1, n: 4, l: 0.02},
+    {m: 1, n: 5, l: 0.02},
+    {m: 2, n: 3, l: 0.02},
+    {m: 2, n: 5, l: 0.02},
+    {m: 3, n: 4, l: 0.02},
+    {m: 3, n: 5, l: 0.02},
+    {m: 3, n: 7, l: 0.02},
+];
 
+class ChladniApp {
     constructor () {
         this.canvas = document.createElement("canvas");
         this.canvas.classList.add("pixelated");
@@ -33,8 +45,6 @@ class ChladniApp {
 
         this.width = window.innerWidth / CANVAS_SCALE;
         this.height = window.innerHeight / CANVAS_SCALE;
-
-        this.currentFrequency = 0.04;  // default frequency param L1 from your worker
 
         const debounceTimer = new Debouncer();
 
@@ -65,25 +75,52 @@ class ChladniApp {
         this.updateFn = this.update.bind(this);
         this.update(performance.now());
 
-        setInterval(this.checkForFallenParticles.bind(this), 10000);
+        // Remove periodic scrambling of particles: no more interval for checkForFallenParticles
+        // setInterval(this.checkForFallenParticles.bind(this), 10000);
 
         window.addEventListener("keypress", this.keypress.bind(this));
 
-        // --- FREQUENCY SLIDER UI ---
-        this.createFrequencySlider();
+        // Create frequency slider
+        this.freqSlider = document.createElement("input");
+        this.freqSlider.type = "range";
+        this.freqSlider.min = 0;
+        this.freqSlider.max = CHLADNI_PARAMS.length - 1; // max index
+        this.freqSlider.step = 1;
+        this.freqSlider.value = 0;
+        this.freqSlider.style.position = "fixed";
+        this.freqSlider.style.bottom = "20px";
+        this.freqSlider.style.left = "50%";
+        this.freqSlider.style.transform = "translateX(-50%)";
+        this.freqSlider.style.width = "300px";
+        this.freqSlider.style.zIndex = "1000";
+        document.body.appendChild(this.freqSlider);
+
+        // Send initial params to worker
+        this.sendParamsToWorker(0);
+
+        // Update worker on slider input
+        this.freqSlider.addEventListener("input", (e) => {
+            const index = parseInt(e.target.value);
+            this.sendParamsToWorker(index);
+        });
     }
 
     initStatus() {
         this.fpsElem = document.getElementById("fps");
         setInterval(() => {
-            this.fpsElem.innerText = this.fpsCount.toString(); this.fpsCount = 0;
+            this.fpsElem.innerText = this.fpsCount.toString();
+            this.fpsCount = 0;
         }, 1000);
     }
 
     keypress(event) {
         switch (event.key) {
-            case "d": this.debugVibration = !this.debugVibration; break;
-            case " ": this.isRunning = !this.isRunning; break;
+            case "d":
+                this.debugVibration = !this.debugVibration;
+                break;
+            case " ":
+                this.isRunning = !this.isRunning;
+                break;
         }
     }
 
@@ -93,15 +130,12 @@ class ChladniApp {
         this.canvas.setAttribute("width", this.width);
         this.canvas.setAttribute("height", this.height);
 
-        this.worker.postMessage({
-            width: this.width,
-            height: this.height,
-            frequency: this.currentFrequency  // send current frequency on resize too
-        });
+        // Re-send current frequency params to worker on resize to recalc
+        const currentIndex = parseInt(this.freqSlider.value);
+        this.sendParamsToWorker(currentIndex);
 
         this.imageData = this.context.getImageData(0, 0, this.width, this.height);
         this.buffer = new Uint32Array(this.imageData.data.buffer);
-        console.info(`New buffer created (${this.width}x${this.height})`);
 
         for (let i = 0; i < this.particles.length; i += 2) {
             this.particles[i] = Math.random() * this.width;
@@ -120,20 +154,9 @@ class ChladniApp {
         }
     }
 
+    // No more particle scrambling — so this can be removed or left unused
     checkForFallenParticles() {
-        const SLACK = 100;  // allow particles to really leave the screen before replacing them
-
-        for (let i = 0; i < this.particles.length; i += 2) {
-            let x = this.particles[i];
-            let y = this.particles[i + 1];
-
-            const didFall = x < -SLACK || x >= this.width + SLACK || y < -SLACK || y >= this.height + SLACK;
-
-            if (didFall) {
-                this.particles[i] = Math.random() * this.width;
-                this.particles[i + 1] = Math.random() * this.height;
-            }
-        }
+        // Intentionally empty or remove method
     }
 
     obtainGradientAt(x, y) {
@@ -171,6 +194,7 @@ class ChladniApp {
 
             if (this.gradients) {
                 const [gradX, gradY] = this.obtainGradientAt(x, y);
+
                 x += MAX_GRADIENT_INTENSITY * gradX;
                 y += MAX_GRADIENT_INTENSITY * gradY;
             }
@@ -190,52 +214,13 @@ class ChladniApp {
         requestAnimationFrame(this.updateFn);
     }
 
-    createFrequencySlider() {
-        const sliderContainer = document.createElement('div');
-        Object.assign(sliderContainer.style, {
-            position: 'fixed',
-            bottom: '20px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            color: 'white',
-            fontFamily: 'monospace',
-            fontSize: '16px',
-            zIndex: 1000,
-            backgroundColor: 'rgba(0,0,0,0.4)',
-            padding: '8px 12px',
-            borderRadius: '6px',
-            userSelect: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px',
+    sendParamsToWorker(index) {
+        const params = CHLADNI_PARAMS[index];
+        this.worker.postMessage({
+            width: this.width,
+            height: this.height,
+            chladniParams: { m: params.m, n: params.n, l: params.l }
         });
-
-        const freqLabel = document.createElement('span');
-        freqLabel.textContent = `Frequency: ${this.currentFrequency.toFixed(4)}`;
-
-        const freqSlider = document.createElement('input');
-        freqSlider.type = 'range';
-        freqSlider.min = 0.005;
-        freqSlider.max = 0.05;
-        freqSlider.step = 0.0005;
-        freqSlider.value = this.currentFrequency;
-        freqSlider.style.cursor = 'pointer';
-
-        freqSlider.addEventListener('input', () => {
-            this.currentFrequency = parseFloat(freqSlider.value);
-            freqLabel.textContent = `Frequency: ${this.currentFrequency.toFixed(4)}`;
-
-            // Send new frequency to worker with current dimensions
-            this.worker.postMessage({
-                width: this.width,
-                height: this.height,
-                frequency: this.currentFrequency
-            });
-        });
-
-        sliderContainer.appendChild(freqLabel);
-        sliderContainer.appendChild(freqSlider);
-        document.body.appendChild(sliderContainer);
     }
 }
 
